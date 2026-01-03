@@ -1,4 +1,4 @@
-module github.com/landakram/plaid-cli
+module github.com/jverdi/plaid-cli
 
 go 1.24.0
 

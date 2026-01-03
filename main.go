@@ -15,7 +15,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/landakram/plaid-cli/pkg/plaid_cli"
+	"github.com/jverdi/plaid-cli/pkg/plaid_cli"
 	"github.com/manifoldco/promptui"
 	"github.com/plaid/plaid-go/v41/plaid"
 	"github.com/spf13/cobra"
@@ -482,7 +482,7 @@ Configuration:
   After setting those API credentials, plaid-cli is ready to use! 
   You'll probably want to run 'plaid-cli link' next.
   
-  Please see the README (https://github.com/landakram/plaid-cli/blob/master/README.md) 
+  Please see the README (https://github.com/jverdi/plaid-cli/blob/master/README.md) 
   for more detailed usage instructions.
 
   Made by @landakram.
