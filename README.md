@@ -12,10 +12,10 @@ output formats from the comfort of the command line.
 Install with `go get`:
 
 ```sh
-go get github.com/landakram/plaid-cli
+go get github.com/jverdi/plaid-cli
 ```
 
-Or grab a binary for your platform from the [Releases](https://github.com/landakram/plaid-cli/releases) page.
+Or grab a binary for your platform from the [Releases](https://github.com/jverdi/plaid-cli/releases) page.
 
 ## Configuration
 
@@ -26,8 +26,8 @@ plaid-cli will look at the following environment variables for API credentials:
 
 ```sh
 PLAID_CLIENT_ID=<client id>
-PLAID_SECRET=<devlopment secret>
-PLAID_ENVIRONMENT=development
+PLAID_SECRET=<sandbox secret>
+PLAID_ENVIRONMENT=sandbox
 PLAID_LANGUAGE=en  # optional, detected using system's locale
 PLAID_COUNTRIES=US # optional, detected using system's locale
 ```
@@ -40,8 +40,8 @@ API credentials can also be specified using a config file located at
 ```toml
 [plaid]
 client_id = "<client id>"
-secret = "<development secret>"
-environment = "development"
+secret = "<sandbox secret>"
+environment = "sandbox"
 ```
 
 After setting those API credentials, plaid-cli is ready to use!

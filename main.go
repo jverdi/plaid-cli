@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -16,7 +17,7 @@ import (
 
 	"github.com/landakram/plaid-cli/pkg/plaid_cli"
 	"github.com/manifoldco/promptui"
-	"github.com/plaid/plaid-go/plaid"
+	"github.com/plaid/plaid-go/v41/plaid"
 	"github.com/spf13/cobra"
 
 	"github.com/spf13/viper"
@@ -119,33 +120,38 @@ func main() {
 		log.Fatalln("⚠️  Invalid language code. Please configure `plaid.language` (using an envvar, PLAID_LANGUAGE, or in plaid-cli's config file) to a language that Plaid supports. Plaid supports the following languages: ", plaidSupportedLanguages)
 	}
 
-	viper.SetDefault("plaid.environment", "development")
+	viper.SetDefault("plaid.environment", "sandbox")
 	plaidEnvStr := strings.ToLower(viper.GetString("plaid.environment"))
 
 	var plaidEnv plaid.Environment
 	switch plaidEnvStr {
+	case "sandbox":
+		plaidEnv = plaid.Sandbox
 	case "development":
-		plaidEnv = plaid.Development
+		log.Println("⚠️  Plaid development is now sandbox. Using sandbox.")
+		plaidEnv = plaid.Sandbox
 	case "production":
 		plaidEnv = plaid.Production
 	default:
-		log.Fatalln("Invalid plaid environment. Valid plaid environments are 'development' or 'production'.")
+		log.Printf("⚠️  Invalid plaid environment %q. Falling back to sandbox.", plaidEnvStr)
+		plaidEnv = plaid.Sandbox
 	}
 
-	opts := plaid.ClientOptions{
-		viper.GetString("plaid.client_id"),
-		viper.GetString("plaid.secret"),
-		plaidEnv,
-		&http.Client{},
+	plaidCountries := make([]plaid.CountryCode, 0, len(countries))
+	for _, c := range countries {
+		plaidCountries = append(plaidCountries, plaid.CountryCode(c))
 	}
 
-	client, err := plaid.NewClient(opts)
+	configuration := plaid.NewConfiguration()
+	configuration.AddDefaultHeader("PLAID-CLIENT-ID", viper.GetString("plaid.client_id"))
+	configuration.AddDefaultHeader("PLAID-SECRET", viper.GetString("plaid.secret"))
+	configuration.UseEnvironment(plaidEnv)
+	configuration.HTTPClient = &http.Client{}
 
-	if err != nil {
-		log.Fatal(err)
-	}
+	client := plaid.NewAPIClient(configuration)
+	ctx := context.Background()
 
-	linker := plaid_cli.NewLinker(data, client, countries, lang)
+	linker := plaid_cli.NewLinker(data, client, ctx, plaidCountries, lang)
 
 	linkCommand := &cobra.Command{
 		Use:   "link [ITEM-ID-OR-ALIAS]",
@@ -290,12 +296,13 @@ func main() {
 
 			err := WithRelinkOnAuthError(itemOrAlias, data, linker, func() error {
 				token := data.Tokens[itemOrAlias]
-				res, err := client.GetAccounts(token)
+				request := plaid.NewAccountsGetRequest(token)
+				res, _, err := client.PlaidApi.AccountsGet(ctx).AccountsGetRequest(*request).Execute()
 				if err != nil {
 					return err
 				}
 
-				b, err := json.MarshalIndent(res.Accounts, "", "  ")
+				b, err := json.MarshalIndent(res.GetAccounts(), "", "  ")
 				if err != nil {
 					return err
 				}
@@ -334,15 +341,15 @@ func main() {
 					accountIDs = append(accountIDs, accountID)
 				}
 
-				options := plaid.GetTransactionsOptions{
-					StartDate:  fromFlag,
-					EndDate:    toFlag,
-					AccountIDs: accountIDs,
-					Count:      100,
-					Offset:     0,
+				options := plaid.TransactionsGetRequestOptions{
+					Count:  plaid.PtrInt32(100),
+					Offset: plaid.PtrInt32(0),
+				}
+				if len(accountIDs) > 0 {
+					options.AccountIds = &accountIDs
 				}
 
-				transactions, err := AllTransactions(options, client, token)
+				transactions, err := AllTransactions(ctx, &options, client, token, fromFlag, toFlag)
 				if err != nil {
 					return err
 				}
@@ -367,10 +374,10 @@ func main() {
 			}
 		},
 	}
-	transactionsCommand.Flags().StringVarP(&fromFlag, "from", "f", "", "Date of first transaction (required)")
+	transactionsCommand.Flags().StringVarP(&fromFlag, "from", "f", "", "Date of first transaction (required, YYYY-MM-DD)")
 	transactionsCommand.MarkFlagRequired("from")
 
-	transactionsCommand.Flags().StringVarP(&toFlag, "to", "t", "", "Date of last transaction (required)")
+	transactionsCommand.Flags().StringVarP(&toFlag, "to", "t", "", "Date of last transaction (required, YYYY-MM-DD)")
 	transactionsCommand.MarkFlagRequired("to")
 
 	transactionsCommand.Flags().StringVarP(&outputFormat, "output-format", "o", "json", "Output format")
@@ -393,23 +400,36 @@ func main() {
 			err := WithRelinkOnAuthError(itemOrAlias, data, linker, func() error {
 				token := data.Tokens[itemOrAlias]
 
-				itemResp, err := client.GetItem(token)
+				itemRequest := plaid.NewItemGetRequest(token)
+				itemResp, _, err := client.PlaidApi.ItemGet(ctx).ItemGetRequest(*itemRequest).Execute()
 				if err != nil {
 					return err
 				}
 
-				instID := itemResp.Item.InstitutionID
-
-				opts := plaid.GetInstitutionByIDOptions{
-					IncludeOptionalMetadata: withOptionalMetadataFlag,
-					IncludeStatus:           withStatusFlag,
+				item := itemResp.GetItem()
+				instID := item.GetInstitutionId()
+				if instID == "" {
+					return errors.New("Institution ID is missing for this item. Try relinking.")
 				}
-				resp, err := client.GetInstitutionByIDWithOptions(instID, countries, opts)
+
+				request := plaid.NewInstitutionsGetByIdRequest(instID, plaidCountries)
+				if withOptionalMetadataFlag || withStatusFlag {
+					options := plaid.InstitutionsGetByIdRequestOptions{}
+					if withOptionalMetadataFlag {
+						options.IncludeOptionalMetadata = plaid.PtrBool(true)
+					}
+					if withStatusFlag {
+						options.IncludeStatus = plaid.PtrBool(true)
+					}
+					request.SetOptions(options)
+				}
+
+				resp, _, err := client.PlaidApi.InstitutionsGetById(ctx).InstitutionsGetByIdRequest(*request).Execute()
 				if err != nil {
 					return err
 				}
 
-				b, err := json.MarshalIndent(resp.Institution, "", "  ")
+				b, err := json.MarshalIndent(resp.GetInstitution(), "", "  ")
 				if err != nil {
 					return err
 				}
@@ -444,8 +464,8 @@ Configuration:
   plaid-cli will look at the following environment variables for API credentials:
   
     PLAID_CLIENT_ID=<client id>
-    PLAID_SECRET=<devlopment secret>
-    PLAID_ENVIRONMENT=development
+    PLAID_SECRET=<sandbox secret>
+    PLAID_ENVIRONMENT=sandbox
     PLAID_LANGUAGE=en  # optional, detected using system's locale
     PLAID_COUNTRIES=US # optional, detected using system's locale
   
@@ -456,8 +476,8 @@ Configuration:
   
     [plaid]
     client_id = "<client id>"
-    secret = "<development secret>"
-    environment = "development"
+    secret = "<sandbox secret>"
+    environment = "sandbox"
   
   After setting those API credentials, plaid-cli is ready to use! 
   You'll probably want to run 'plaid-cli link' next.
@@ -490,25 +510,35 @@ Configuration:
 	rootCommand.Execute()
 }
 
-func AllTransactions(opts plaid.GetTransactionsOptions, client *plaid.Client, token string) ([]plaid.Transaction, error) {
+func AllTransactions(ctx context.Context, opts *plaid.TransactionsGetRequestOptions, client *plaid.APIClient, token string, startDate string, endDate string) ([]plaid.Transaction, error) {
 	var transactions []plaid.Transaction
 
-	res, err := client.GetTransactionsWithOptions(token, opts)
-	if err != nil {
-		return transactions, err
+	if opts == nil {
+		opts = &plaid.TransactionsGetRequestOptions{}
 	}
 
-	transactions = append(transactions, res.Transactions...)
+	if opts.Count == nil {
+		opts.Count = plaid.PtrInt32(100)
+	}
+	if opts.Offset == nil {
+		opts.Offset = plaid.PtrInt32(0)
+	}
 
-	for len(transactions) < res.TotalTransactions {
-		opts.Offset += opts.Count
-		res, err := client.GetTransactionsWithOptions(token, opts)
+	for {
+		request := plaid.NewTransactionsGetRequest(token, startDate, endDate)
+		request.SetOptions(*opts)
+		res, _, err := client.PlaidApi.TransactionsGet(ctx).TransactionsGetRequest(*request).Execute()
 		if err != nil {
 			return transactions, err
 		}
 
 		transactions = append(transactions, res.Transactions...)
 
+		if len(transactions) >= int(res.TotalTransactions) {
+			break
+		}
+
+		*opts.Offset += *opts.Count
 	}
 
 	return transactions, nil
@@ -516,22 +546,25 @@ func AllTransactions(opts plaid.GetTransactionsOptions, client *plaid.Client, to
 
 func WithRelinkOnAuthError(itemID string, data *plaid_cli.Data, linker *plaid_cli.Linker, action func() error) error {
 	err := action()
-	if e, ok := err.(plaid.Error); ok {
-		if e.ErrorCode == "ITEM_LOGIN_REQUIRED" {
-			log.Println("Login expired. Relinking...")
+	if err == nil {
+		return nil
+	}
 
-			port := viper.GetString("link.port")
+	plaidErr, plaidErrConv := plaid.ToPlaidError(err)
+	if plaidErrConv == nil && plaidErr.ErrorCode == "ITEM_LOGIN_REQUIRED" {
+		log.Println("Login expired. Relinking...")
 
-			err = linker.Relink(itemID, port)
+		port := viper.GetString("link.port")
 
-			if err != nil {
-				return err
-			}
+		err = linker.Relink(itemID, port)
 
-			log.Println("Re-running action...")
-
-			err = action()
+		if err != nil {
+			return err
 		}
+
+		log.Println("Re-running action...")
+
+		err = action()
 	}
 
 	return err
